@@ -1,0 +1,148 @@
+import os
+import sys
+import torch
+from PIL import Image
+from torchvision import transforms
+from transformers import AutoTokenizer
+from model import DisasterNetMultimodal
+
+# Label Mapping for CrisisMMD Disaster Severity
+ID_TO_LABEL = {
+    0: 'Severe Damage (মারাত্মক ক্ষয়ক্ষতি)',
+    1: 'Humanitarian Rescue (ত্রাণ ও উদ্ধারকার্য)',
+    2: 'Affected People (ক্ষতিগ্রস্ত মানুষ)'
+}
+
+class DisasterNetPredictor:
+    def __init__(self, model_path='../models/disasternet_multitask_v2.pth', device=None):
+        self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[+] Initializing DisasterNet-Bangla Predictor on {self.device}...")
+        
+        # 1. Vision Preprocessing Pipeline
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # 2. Official BanglaBERT Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained("csebuetnlp/banglabert")
+        
+        # 3. Model Architecture Instantiation
+        self.model = DisasterNetMultimodal(num_classes=3, vocab_size=32000, use_lora=True).to(self.device)
+        
+        # 4. Load Trained Multi-Task Weights
+        if os.path.exists(model_path):
+            print(f"[+] Loading trained checkpoint from {model_path}...")
+            state_dict = torch.load(model_path, map_location=self.device)
+            self.model.load_state_dict(state_dict)
+            print("[+] Neural cortex loaded successfully.")
+        else:
+            print(f"[!] WARNING: Model weights not found at {model_path}. Using random initialization!")
+            
+        self.model.eval()
+
+    def generate_caption(self, pixel_values, max_length=40):
+        """
+        Autoregressive Greedy Search for Bengali Caption Generation (Task 2)
+        """
+        generated_ids = [self.tokenizer.cls_token_id]
+        
+        with torch.no_grad():
+            for _ in range(max_length):
+                curr_ids = torch.tensor([generated_ids], device=self.device)
+                curr_mask = torch.ones_like(curr_ids)
+                
+                # Forward pass through Cross-Attention Decoder
+                logits = self.model(pixel_values, curr_ids, curr_mask, task="captioning")
+                next_token_logits = logits[:, -1, :]
+                next_token_id = torch.argmax(next_token_logits, dim=-1).item()
+                
+                generated_ids.append(next_token_id)
+                
+                if next_token_id == self.tokenizer.sep_token_id:
+                    break
+                    
+        caption = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        return caption.strip()
+
+    def classify_damage(self, pixel_values, caption=""):
+        """
+        Multimodal Damage Severity Assessment (Task 1: Vision + Generated Caption)
+        """
+        inputs = self.tokenizer(
+            caption if caption else "বন্যা পরিস্থিতি",
+            padding='max_length',
+            max_length=128,
+            truncation=True,
+            return_tensors="pt"
+        )
+        input_ids = inputs['input_ids'].to(self.device)
+        attention_mask = inputs['attention_mask'].to(self.device)
+        
+        with torch.no_grad():
+            logits = self.model(pixel_values, input_ids, attention_mask, task="classification")
+            probs = torch.softmax(logits, dim=-1)[0]
+            pred_id = torch.argmax(probs).item()
+            confidence = probs[pred_id].item() * 100
+            
+        return ID_TO_LABEL[pred_id], confidence, probs.cpu().numpy()
+
+    def predict(self, image_path):
+        """
+        End-to-End Master Inference Protocol
+        """
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Target image not found: {image_path}")
+            
+        print(f"\n==================================================")
+        print(f"🖼️  ANALYZING DISASTER SCENE: {os.path.basename(image_path)}")
+        print(f"==================================================")
+        
+        image = Image.open(image_path).convert('RGB')
+        pixel_values = self.transform(image).unsqueeze(0).to(self.device)
+        
+        # Phase A: Autoregressive Caption Generation
+        print("[*] Task 2: Autoregressively decoding visual scene into Bengali...")
+        caption = self.generate_caption(pixel_values)
+        print(f"📝 Generated Caption : \"{caption}\"")
+        
+        # Phase B: Multimodal Severity Classification
+        print("[*] Task 1: Fusing visual cortex with generated caption for damage assessment...")
+        category, conf, all_probs = self.classify_damage(pixel_values, caption)
+        print(f"🚨 Severity Class    : {category}")
+        print(f"🎯 Confidence        : {conf:.2f}%")
+        print(f"==================================================\n")
+        
+        return {
+            'caption': caption,
+            'category': category,
+            'confidence': conf,
+            'probabilities': all_probs
+        }
+
+if __name__ == "__main__":
+    predictor = DisasterNetPredictor()
+    
+    # Check if a custom image path was passed via command line
+    if len(sys.argv) > 1:
+        test_img = sys.argv[1]
+        predictor.predict(test_img)
+    else:
+        # Default: Test on the first image from processed dataset
+        sample_csv = '../data/processed/master_dataset_translated.csv'
+        if os.path.exists(sample_csv):
+            import pandas as pd
+            df = pd.read_csv(sample_csv)
+            if len(df) > 0:
+                sample_img_rel = df.iloc[0]['image_path']
+                sample_img = os.path.join('../data/processed/', sample_img_rel)
+                if os.path.exists(sample_img):
+                    print("[i] No image provided in CLI. Running test on sample dataset image...")
+                    predictor.predict(sample_img)
+                else:
+                    print(f"[!] Sample image {sample_img} not found.")
+            else:
+                print("[!] CSV file is empty.")
+        else:
+            print("[i] Usage: python evaluate.py <path_to_disaster_image.jpg>")
