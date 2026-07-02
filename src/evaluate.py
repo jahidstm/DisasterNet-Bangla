@@ -7,6 +7,9 @@ from torchvision import transforms
 from transformers import AutoTokenizer
 from model import DisasterNetMultimodal
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # Label Mapping for CrisisMMD Disaster Severity
 ID_TO_LABEL = {
     0: 'Severe Damage (মারাত্মক ক্ষয়ক্ষতি)',
@@ -57,6 +60,10 @@ class DisasterNetPredictor:
                     curr_mask = torch.ones_like(curr_ids)
                     
                     logits = self.model(pixel_values, curr_ids, curr_mask, task="captioning")
+                    logits[:, -1, self.tokenizer.cls_token_id] = -float('inf')
+                    logits[:, -1, self.tokenizer.pad_token_id] = -float('inf')
+                    if len(generated_ids) > 0:
+                        logits[:, -1, generated_ids[-1]] = -float('inf')
                     next_token_id = torch.argmax(logits[:, -1, :], dim=-1).item()
                     generated_ids.append(next_token_id)
                     if next_token_id == self.tokenizer.sep_token_id:
@@ -80,6 +87,11 @@ class DisasterNetPredictor:
                         curr_mask = torch.ones_like(curr_ids)
                         
                         logits = self.model(pixel_values, curr_ids, curr_mask, task="captioning")
+                        logits[:, -1, self.tokenizer.cls_token_id] = -float('inf')
+                        logits[:, -1, self.tokenizer.pad_token_id] = -float('inf')
+                        # Prevent consecutive token repetition (looping bug fix)
+                        if len(seq) > 0:
+                            logits[:, -1, seq[-1]] = -float('inf')
                         log_probs = torch.log_softmax(logits[0, -1, :], dim=-1)
                         topk_probs, topk_ids = torch.topk(log_probs, beam_width)
                         

@@ -9,6 +9,9 @@ import torch
 from data_loader import DisasterNetMultimodalDataset
 from evaluate import DisasterNetPredictor
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 LABEL_NAMES = ['Severe_Damage', 'Humanitarian_Rescue', 'Affected_People']
 
 def get_ngrams(sequence, n):
@@ -145,6 +148,8 @@ def run_benchmark(csv_path='../data/processed/master_dataset_translated.csv',
         pixel_values = predictor.transform(image).unsqueeze(0).to(predictor.device)
 
         gen_caption = predictor.generate_caption(pixel_values, beam_width=beam_width)
+        print(f"\n[?] Actual Caption: {ref_caption}")
+        print(f"[?] Generated Caption: {gen_caption}")
         pred_cat_str, conf, _ = predictor.classify_damage(pixel_values, gen_caption)
 
         # Map predicted string back to label ID
